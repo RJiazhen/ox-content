@@ -42,8 +42,10 @@ import type { SsgLocalePath } from "./locale-switcher";
 import {
   attachSidebarLabels,
   localizeHeaderNavItems,
+  localeHomeHref,
   localizeNavGroups,
   resolveSidebarItems,
+  type LocalizeNavOptions,
 } from "./locale-nav";
 import {
   parsePageChromeFlags,
@@ -812,6 +814,8 @@ export async function generateHtmlPage(
   headValidation: false | "warn" | "strict" = false,
   defaultLocale?: string,
   iconsEnabled = false,
+  /** The home page href, if it is not the root of the site. */
+  homeHref?: string,
 ): Promise<string> {
   const mod = await importNapiModule();
   const navGroupsForRust = convertNavGroupsForRust(navGroups);
@@ -843,11 +847,41 @@ export async function generateHtmlPage(
   const html = typeof result === "string" ? result : result.html;
   const diagnostics = typeof result === "string" ? [] : (result.diagnostics ?? []);
   reportHeadDiagnostics(diagnostics, headValidation);
-  return injectSearchLocaleFilters(html, {
+  const htmlWithFilters = injectSearchLocaleFilters(html, {
     locales: availableLocales ?? [],
     current: locale,
     defaultLocale: defaultLocale ?? availableLocales?.[0]?.code ?? "en",
   });
+
+  return homeHref ? applyHeaderLogoHref(htmlWithFilters, homeHref) : htmlWithFilters;
+}
+
+/**
+ * Points the header logo at `homeHref`. The page template always emits `{base}index.html`.
+ * Finds the `header-title` anchor and replaces only its `href` value.
+ */
+function applyHeaderLogoHref(html: string, homeHref: string): string {
+  const classMarker = 'class="header-title';
+  const classAt = html.indexOf(classMarker);
+  if (classAt === -1) {
+    return html;
+  }
+  const anchorAt = html.lastIndexOf("<a ", classAt);
+  if (anchorAt === -1) {
+    return html;
+  }
+  const hrefKey = 'href="';
+  const hrefAt = html.indexOf(hrefKey, anchorAt);
+  if (hrefAt === -1 || hrefAt > classAt) {
+    return html;
+  }
+  const valueStart = hrefAt + hrefKey.length;
+  const valueEnd = html.indexOf('"', valueStart);
+  if (valueEnd === -1 || valueEnd > classAt) {
+    return html;
+  }
+  const escaped = homeHref.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+  return html.slice(0, valueStart) + escaped + html.slice(valueEnd);
 }
 
 interface GeneratedHtmlPage {
@@ -1972,9 +2006,42 @@ async function renderSsgPage(
       context.ssgOptions.headValidation,
       i18n?.defaultLocale,
       Boolean(context.options.icons?.enabled),
+      resolveHeaderLogoHref(
+        context.base,
+        localeNav,
+        versionNavigation,
+        context.ssgOptions.routePrefix,
+      ),
     ),
     markdownSource,
   );
+}
+
+/**
+ * Header logo target. Locale lookup matches header nav, then version rewrite
+ * keeps the result inside the active documentation version.
+ */
+export function resolveHeaderLogoHref(
+  base: string,
+  localeNav: LocalizeNavOptions | undefined,
+  versionNavigation: VersionNavigationContext | undefined,
+  routePrefix?: string,
+): string {
+  const homeBase = publicBase(base, routePrefix);
+  const homeNav =
+    localeNav && normalizeRoutePrefix(routePrefix)
+      ? {
+          ...localeNav,
+          base: homeBase,
+          pages: localeNav.pages.map((page) => ({
+            ...page,
+            path: localeUrlPath(page.path, routePrefix),
+            aliases: page.aliases?.map((alias) => localeUrlPath(alias, routePrefix)),
+          })),
+        }
+      : localeNav;
+  const homeHref = homeNav ? localeHomeHref(homeNav) : `${homeBase}index.html`;
+  return versionNavigation ? rewriteVersionedHref(homeHref, versionNavigation) : homeHref;
 }
 
 function pageMarkdownSourceHref(
